@@ -476,14 +476,18 @@ public class EC2FleetLabelCloud extends AbstractEC2FleetCloud {
                 }
                 final EC2Fleet fleet = EC2Fleets.get(state.fleetId);
                 // Look up the warm pool at most once per fleet.
-                if (!warmPoolByFleetId.computeIfAbsent(state.fleetId, id -> useWarmPool(fleet, id))) {
-                    continue;
+                final boolean useWarmPool = warmPoolByFleetId.computeIfAbsent(state.fleetId, id ->
+                        fleet.isAutoScalingGroup()
+                                && ((AutoScalingGroupFleet) fleet).hasWarmPoolWithInstanceReuse(
+                                        getAwsCredentialsId(), region, endpoint, id));
+                if (useWarmPool) {
+                    // Warm pool with instance reuse confirmed: hand instances back to the ASG so it can reuse them.
+                    fine("Scaling down AutoScalingGroup %s with warm pool: %s",
+                            state.fleetId, state.instanceIdsToTerminate.keySet());
+                    ((AutoScalingGroupFleet) fleet).scaleDownWithWarmPool(
+                            getAwsCredentialsId(), region, endpoint, state.fleetId, state.instanceIdsToTerminate);
+                    instanceIdsToRemove.keySet().removeAll(state.instanceIdsToTerminate.keySet());
                 }
-                fine("Scaling down AutoScalingGroup %s with warm pool: %s",
-                        state.fleetId, state.instanceIdsToTerminate.keySet());
-                ((AutoScalingGroupFleet) fleet).scaleDownWithWarmPool(
-                        getAwsCredentialsId(), region, endpoint, state.fleetId, state.instanceIdsToTerminate);
-                instanceIdsToRemove.keySet().removeAll(state.instanceIdsToTerminate.keySet());
             }
 
             Registry.getEc2Api().terminateInstances(ec2, instanceIdsToRemove.keySet());
@@ -595,17 +599,6 @@ public class EC2FleetLabelCloud extends AbstractEC2FleetCloud {
                 });
             }
         }
-    }
-
-    /**
-     * Returns {@code true} when the fleet is an Auto Scaling Group configured with a warm pool that
-     * reuses instances on scale-in. Only then are instances handed back to the ASG for reuse instead
-     * of being terminated directly.
-     */
-    private boolean useWarmPool(final EC2Fleet fleet, final String fleetId) {
-        return fleet.isAutoScalingGroup()
-                && ((AutoScalingGroupFleet) fleet).hasWarmPoolWithInstanceReuse(
-                        getAwsCredentialsId(), region, endpoint, fleetId);
     }
 
     @Override
